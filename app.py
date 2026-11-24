@@ -89,6 +89,28 @@ REGION_COLORS = {
 }
 POSITIVE_COLOR = "#687A52"
 NEGATIVE_COLOR = "#A84F32"
+# El CSV no trae costos: porcentajes de costo de mercancía sobre la venta,
+# calibrados con los márgenes típicos del conjunto Superstore.
+DEFAULT_COST_RATES = {
+    "Furniture": 87,
+    "Office Supplies": 73,
+    "Technology": 73,
+}
+DEFAULT_OPERATING_RATE = 10
+LOYALTY_SEGMENTS = (
+    ("Campeones", "Compran seguido, hace poco y con alto valor."),
+    ("Leales", "Compran con frecuencia y recientemente."),
+    ("Potenciales", "Compraron hace poco, pero aún con baja frecuencia."),
+    ("En riesgo", "Solían comprar seguido, pero hace tiempo que no lo hacen."),
+    ("Inactivos", "Pocas compras y ninguna reciente."),
+)
+SEGMENT_COLORS = {
+    "Campeones": "#3F5A35",
+    "Leales": "#687A52",
+    "Potenciales": "#9A7A49",
+    "En riesgo": "#A84F32",
+    "Inactivos": "#92958E",
+}
 
 
 st.set_page_config(
@@ -309,6 +331,33 @@ with st.sidebar.expander("Filtros adicionales", expanded=False):
         format_func=lambda value: SHIP_MODE_NAMES.get(value, value),
     )
 
+with st.sidebar.expander("Supuestos de rentabilidad", expanded=False):
+    st.caption(
+        "El archivo no contiene costos. Ajuste el costo de mercancía por categoría "
+        "y los gastos operativos, ambos como porcentaje de la venta."
+    )
+    cost_rates = {
+        category: st.slider(
+            f"Costo de mercancía · {CATEGORY_NAMES.get(category, category)}",
+            min_value=0,
+            max_value=100,
+            value=DEFAULT_COST_RATES.get(category, 75),
+            format="%d%%",
+        )
+        / 100
+        for category in sorted(df["Category"].dropna().unique())
+    }
+    operating_rate = (
+        st.slider(
+            "Gastos operativos",
+            min_value=0,
+            max_value=50,
+            value=DEFAULT_OPERATING_RATE,
+            format="%d%%",
+        )
+        / 100
+    )
+
 if not selected_regions or not selected_categories or not selected_segments or not selected_ship_modes:
     st.warning("Mantenga al menos una opción seleccionada en cada filtro.")
     st.stop()
@@ -321,6 +370,9 @@ dimension_data = df.loc[
     & df["Segment"].isin(selected_segments)
     & df["Ship Mode"].isin(selected_ship_modes)
 ].copy()
+dimension_data["Cost"] = dimension_data["Sales"] * dimension_data["Category"].map(
+    cost_rates
+).fillna(0.75)
 filtered = dimension_data.loc[dimension_data["Order Date"].between(start, end)].copy()
 
 if filtered.empty:
@@ -404,11 +456,22 @@ average_order = total_sales / order_count if order_count else 0.0
 active_months = int(filtered["Month"].nunique())
 average_monthly_sales = total_sales / active_months if active_months else 0.0
 
+goods_cost = float(filtered["Cost"].sum())
+operating_expenses = total_sales * operating_rate
+total_cost = goods_cost + operating_expenses
+gross_profit = total_sales - goods_cost
+net_profit = gross_profit - operating_expenses
+gross_margin = gross_profit / total_sales * 100 if total_sales else 0.0
+net_margin = net_profit / total_sales * 100 if total_sales else 0.0
+
 metric_columns = st.columns(4)
 metric_columns[0].metric(
-    "Ventas registradas",
-    format_number(total_sales, 2),
-    help="Suma de las ventas registradas en el período y los filtros seleccionados.",
+    "Ganancia",
+    format_number(net_profit, 2),
+    help=(
+        "Ventas menos costo de mercancía y gastos operativos estimados "
+        "(ver «Supuestos de rentabilidad» en la barra lateral)."
+    ),
 )
 metric_columns[1].metric(
     "Pedidos distintos",
@@ -426,6 +489,33 @@ metric_columns[3].metric(
     help=(
         "Ventas registradas divididas por los meses con al menos un pedido dentro "
         "del período seleccionado."
+    ),
+)
+
+st.markdown("**Rendimientos**")
+performance_columns = st.columns(3)
+performance_columns[0].metric(
+    "Ingreso bruto",
+    format_number(total_sales, 2),
+    delta=f"Ganancia bruta {format_number(gross_profit, 2)} ({format_number(gross_margin, 1)} %)",
+    delta_color="off",
+    help="Total de ventas del período. La ganancia bruta descuenta solo el costo de mercancía.",
+)
+performance_columns[1].metric(
+    "Ingreso neto",
+    format_number(net_profit, 2),
+    delta=f"Margen neto {format_number(net_margin, 1)} %",
+    delta_color="off",
+    help="Ingreso bruto menos costo de mercancía y gastos operativos.",
+)
+performance_columns[2].metric(
+    "Costo total",
+    format_number(total_cost, 2),
+    delta=f"{format_number(total_cost / total_sales * 100 if total_sales else 0, 1)} % de las ventas",
+    delta_color="off",
+    help=(
+        f"Costo de mercancía ({format_number(goods_cost, 2)}) más gastos "
+        f"operativos ({format_number(operating_expenses, 2)})."
     ),
 )
 
@@ -558,68 +648,78 @@ with left_chart:
 
 with right_chart:
     st.subheader("Cambio de ventas por categoría")
+    region_order = [REGION_NAMES[region] for region in sorted(REGION_NAMES)]
     if comparison is not None:
-        category_change = category_change.sort_values("Cambio")
-        colors = [
-            NEGATIVE_COLOR if value < 0 else POSITIVE_COLOR
-            for value in category_change["Cambio"]
-        ]
-        category_figure = go.Figure(
-            go.Bar(
-                x=category_change["Cambio"],
-                y=category_change["Categoría"],
-                orientation="h",
-                marker_color=colors,
-                customdata=category_change[["Actual", "Anterior"]],
-                hovertemplate=(
-                    "%{y}<br>Cambio: %{x:,.2f}"
-                    "<br>Período actual: %{customdata[0]:,.2f}"
-                    "<br>Período anterior: %{customdata[1]:,.2f}<extra></extra>"
-                ),
+        current_cat_region = comparison_current.groupby(["Category", "Region"])["Sales"].sum()
+        previous_cat_region = comparison_previous.groupby(["Category", "Region"])["Sales"].sum()
+        stacked = (
+            pd.concat(
+                [
+                    current_cat_region.rename("Actual"),
+                    previous_cat_region.rename("Anterior"),
+                ],
+                axis=1,
+            )
+            .fillna(0)
+            .assign(Valor=lambda table: table["Actual"] - table["Anterior"])
+            .reset_index()
+        )
+        x_title = "Cambio en ventas (apilado por región)"
+        caption = (
+            f"{comparison_label} · cada color es el aporte de una región; "
+            "el rombo marca el cambio neto de la categoría."
+        )
+    else:
+        stacked = (
+            filtered.groupby(["Category", "Region"], as_index=False)["Sales"]
+            .sum()
+            .rename(columns={"Sales": "Valor"})
+        )
+        x_title = "Ventas (apilado por región)"
+        caption = "Sin comparación anterior disponible; se muestra el total del período."
+
+    stacked["Categoría"] = stacked["Category"].map(CATEGORY_NAMES)
+    stacked["Región"] = stacked["Region"].map(REGION_NAMES)
+    category_totals = stacked.groupby("Categoría")["Valor"].sum().sort_values()
+    category_figure = px.bar(
+        stacked,
+        x="Valor",
+        y="Categoría",
+        color="Región",
+        orientation="h",
+        color_discrete_map=REGION_COLORS,
+        category_orders={"Categoría": list(category_totals.index), "Región": region_order},
+        labels={"Valor": x_title, "Categoría": ""},
+    )
+    category_figure.update_traces(
+        hovertemplate="%{y} · %{fullData.name}<br>%{x:,.2f}<extra></extra>"
+    )
+    if comparison is not None:
+        category_figure.add_trace(
+            go.Scatter(
+                x=category_totals.values,
+                y=category_totals.index,
+                mode="markers",
+                name="Cambio neto",
+                marker={"symbol": "diamond", "size": 11, "color": "#2F3430"},
+                hovertemplate="%{y}<br>Cambio neto: %{x:,.2f}<extra></extra>",
             )
         )
         category_figure.add_vline(x=0, line_color="#92958E", line_width=1)
-        category_figure.update_layout(
-            template="plotly_white",
-            height=390,
-            margin={"l": 10, "r": 15, "t": 10, "b": 10},
-            xaxis_title="Cambio en ventas registradas",
-            yaxis_title="",
-        )
-        category_figure.update_xaxes(tickformat=",.0f", separatethousands=True, gridcolor="#E8E6DF")
-        st.caption(f"{comparison_label} · barras a la derecha indican aumento.")
-        st.plotly_chart(
-            category_figure,
-            width="stretch",
-            config={"displayModeBar": False},
-        )
-    else:
-        category_sales = (
-            filtered.groupby("Category", as_index=False)["Sales"]
-            .sum()
-            .sort_values("Sales")
-        )
-        category_sales["Categoría"] = category_sales["Category"].map(CATEGORY_NAMES)
-        category_figure = px.bar(
-            category_sales,
-            x="Sales",
-            y="Categoría",
-            orientation="h",
-            labels={"Sales": "Ventas registradas (unidad original)", "Categoría": ""},
-            color_discrete_sequence=[POSITIVE_COLOR],
-        )
-        category_figure.update_layout(
-            template="plotly_white",
-            height=390,
-            margin={"l": 10, "r": 15, "t": 10, "b": 10},
-        )
-        category_figure.update_xaxes(tickformat=",.0f", separatethousands=True, gridcolor="#E8E6DF")
-        st.caption("Sin comparación anterior disponible; se muestra el total del período.")
-        st.plotly_chart(
-            category_figure,
-            width="stretch",
-            config={"displayModeBar": False},
-        )
+    category_figure.update_layout(
+        template="plotly_white",
+        barmode="relative",
+        height=390,
+        margin={"l": 10, "r": 15, "t": 10, "b": 10},
+        legend={"orientation": "h", "y": -0.2, "title_text": ""},
+    )
+    category_figure.update_xaxes(tickformat=",.0f", separatethousands=True, gridcolor="#E8E6DF")
+    st.caption(caption)
+    st.plotly_chart(
+        category_figure,
+        width="stretch",
+        config={"displayModeBar": False},
+    )
 
 st.divider()
 region_column, subcategory_column = st.columns([1.15, 1])
@@ -658,11 +758,11 @@ with region_column:
         )
 
 with subcategory_column:
-    st.subheader("Cambios por subcategoría")
+    st.subheader("Subcategorías: top 5 mejores y top 5 peores")
     if comparison is not None:
         current_subcategories = comparison_current.groupby("Sub-Category")["Sales"].sum()
         previous_subcategories = comparison_previous.groupby("Sub-Category")["Sales"].sum()
-        subcategory_change = (
+        subcategory_values = (
             pd.concat(
                 [
                     current_subcategories.rename("Actual"),
@@ -671,68 +771,63 @@ with subcategory_column:
                 axis=1,
             )
             .fillna(0)
-            .assign(Cambio=lambda table: table["Actual"] - table["Anterior"])
+            .assign(Valor=lambda table: table["Actual"] - table["Anterior"])
             .reset_index()
         )
-        subcategory_change["Subcategoría"] = subcategory_change["Sub-Category"].map(
-            lambda value: SUBCATEGORY_NAMES.get(value, value)
-        )
-        subcategory_change = (
-            subcategory_change.assign(
-                Magnitud=subcategory_change["Cambio"].abs()
-            )
-            .nlargest(10, "Magnitud")
-            .sort_values("Cambio")
-        )
-        colors = [
-            NEGATIVE_COLOR if value < 0 else POSITIVE_COLOR
-            for value in subcategory_change["Cambio"]
-        ]
-        subcategory_figure = go.Figure(
-            go.Bar(
-                x=subcategory_change["Cambio"],
-                y=subcategory_change["Subcategoría"],
-                orientation="h",
-                marker_color=colors,
-                hovertemplate="%{y}<br>Cambio: %{x:,.2f}<extra></extra>",
-            )
-        )
-        subcategory_figure.add_vline(x=0, line_color="#92958E", line_width=1)
-        subcategory_figure.update_layout(
-            template="plotly_white",
-            height=330,
-            margin={"l": 10, "r": 10, "t": 5, "b": 10},
-            xaxis_title="Cambio en ventas registradas",
-            yaxis_title="",
-        )
-        subcategory_figure.update_xaxes(
-            tickformat=",.0f", separatethousands=True, gridcolor="#E8E6DF"
-        )
-        st.plotly_chart(
-            subcategory_figure,
-            width="stretch",
-            config={"displayModeBar": False},
-        )
+        value_title = "Cambio en ventas"
+        st.caption(f"Ordenadas por cambio de ventas · {comparison_label}.")
     else:
-        top_subcategories = (
+        subcategory_values = (
             filtered.groupby("Sub-Category", as_index=False)["Sales"]
             .sum()
-            .nlargest(10, "Sales")
-            .sort_values("Sales")
+            .rename(columns={"Sales": "Valor"})
         )
-        top_subcategories["Subcategoría"] = top_subcategories["Sub-Category"].map(
-            lambda value: SUBCATEGORY_NAMES.get(value, value)
+        value_title = "Ventas"
+        st.caption("Sin comparación anterior disponible; ordenadas por ventas del período.")
+
+    subcategory_values["Subcategoría"] = subcategory_values["Sub-Category"].map(
+        lambda value: SUBCATEGORY_NAMES.get(value, value)
+    )
+    best_subcategories = subcategory_values.nlargest(5, "Valor")
+    worst_subcategories = subcategory_values.loc[
+        ~subcategory_values["Sub-Category"].isin(best_subcategories["Sub-Category"])
+    ].nsmallest(5, "Valor")
+    subcategory_figure = go.Figure()
+    for group, color, label in (
+        (worst_subcategories, NEGATIVE_COLOR, "Top 5 peores"),
+        (best_subcategories, POSITIVE_COLOR, "Top 5 mejores"),
+    ):
+        group = group.sort_values("Valor")
+        subcategory_figure.add_trace(
+            go.Bar(
+                x=group["Valor"],
+                y=group["Subcategoría"],
+                orientation="h",
+                name=label,
+                marker_color=color,
+                text=group["Valor"].map(lambda value: format_number(value, 0)),
+                textposition="auto",
+                hovertemplate=f"%{{y}}<br>{value_title}: %{{x:,.2f}}<extra>{label}</extra>",
+            )
         )
-        figure = px.bar(
-            top_subcategories,
-            x="Sales",
-            y="Subcategoría",
-            orientation="h",
-            labels={"Sales": "Ventas registradas", "Subcategoría": ""},
-            color_discrete_sequence=[POSITIVE_COLOR],
-        )
-        figure.update_layout(template="plotly_white", height=330)
-        st.plotly_chart(figure, width="stretch", config={"displayModeBar": False})
+    if comparison is not None:
+        subcategory_figure.add_vline(x=0, line_color="#92958E", line_width=1)
+    subcategory_figure.update_layout(
+        template="plotly_white",
+        height=380,
+        margin={"l": 10, "r": 10, "t": 5, "b": 10},
+        xaxis_title=value_title,
+        yaxis_title="",
+        legend={"orientation": "h", "y": -0.2, "traceorder": "reversed"},
+    )
+    subcategory_figure.update_xaxes(
+        tickformat=",.0f", separatethousands=True, gridcolor="#E8E6DF"
+    )
+    st.plotly_chart(
+        subcategory_figure,
+        width="stretch",
+        config={"displayModeBar": False},
+    )
 
 st.divider()
 st.subheader("Análisis de clientes, mercados y operación")
@@ -749,32 +844,233 @@ with customer_tab:
             Pedidos=("Order ID", "nunique"),
         )
     )
+    customer_count = len(customer_summary)
     repeat_customers = int(customer_summary["Pedidos"].gt(1).sum())
-    repeat_share = repeat_customers / len(customer_summary) * 100
+    repeat_share = repeat_customers / customer_count * 100
+    average_frequency = float(customer_summary["Pedidos"].mean())
     top_customers = customer_summary.nlargest(10, "Ventas").sort_values("Ventas")
-    top_customer_share = (
-        float(top_customers["Ventas"].sum()) / total_sales * 100
-        if total_sales
-        else 0.0
-    )
 
-    customer_metrics = st.columns(3)
+    # Retención anual: % de clientes de un año que vuelven a comprar el año siguiente.
+    # Usa los años calendario completos que toca el período (con los demás filtros).
+    customers_by_year = dimension_data.groupby("Year")["Customer ID"].agg(set)
+    retention_rows = []
+    for year in sorted(filtered["Year"].unique()):
+        if year - 1 in customers_by_year.index:
+            previous_customers = customers_by_year[year - 1]
+            retained = len(previous_customers & customers_by_year[year])
+            retention_rows.append(
+                {
+                    "Año": str(year),
+                    "Retención": retained / len(previous_customers) * 100,
+                    "Clientes retenidos": retained,
+                    "Clientes año anterior": len(previous_customers),
+                }
+            )
+    retention = pd.DataFrame(retention_rows)
+
+    customer_metrics = st.columns(4)
     customer_metrics[0].metric(
         "Clientes en el período",
-        format_number(len(customer_summary)),
+        format_number(customer_count),
     )
     customer_metrics[1].metric(
-        "Clientes con varios pedidos",
-        format_number(repeat_customers),
-        delta=f"{format_number(repeat_share, 1)} % del total",
+        "Tasa de recompra",
+        f"{format_number(repeat_share, 1)} %",
+        delta=f"{format_number(repeat_customers)} clientes con 2+ pedidos",
         delta_color="off",
-        help="Cuenta clientes con más de un pedido dentro de los filtros activos.",
+        help="Porcentaje de clientes que compraron más de una vez en el período.",
     )
     customer_metrics[2].metric(
-        "Ventas de los 10 principales clientes",
-        f"{format_number(top_customer_share, 1)} %",
-        help="Participación de los 10 clientes con mayores ventas en el período.",
+        "Retención anual",
+        "—" if retention.empty else f"{format_number(retention['Retención'].iloc[-1], 1)} %",
+        delta=None if retention.empty else f"Año {retention['Año'].iloc[-1]} vs. anterior",
+        delta_color="off",
+        help=(
+            "Porcentaje de los clientes del año anterior que volvieron a comprar en el año. "
+            "Se calcula con años calendario completos."
+        ),
     )
+    customer_metrics[3].metric(
+        "Frecuencia de compra",
+        f"{format_number(average_frequency, 1)} pedidos",
+        help="Pedidos promedio por cliente en el período (cuántas veces nos compró).",
+    )
+
+    frequency_column, retention_column = st.columns(2)
+    with frequency_column:
+        st.markdown("**¿Cuántas veces nos compró cada cliente?**")
+        frequency_bins = pd.cut(
+            customer_summary["Pedidos"],
+            bins=[0, 1, 2, 3, 5, 9, float("inf")],
+            labels=["1", "2", "3", "4–5", "6–9", "10+"],
+        )
+        frequency = (
+            frequency_bins.value_counts(sort=False)
+            .rename_axis("Compras")
+            .reset_index(name="Clientes")
+        )
+        frequency["Porcentaje"] = frequency["Clientes"] / customer_count * 100
+        frequency_figure = go.Figure(
+            go.Bar(
+                x=frequency["Compras"].astype(str),
+                y=frequency["Clientes"],
+                marker_color=[NEGATIVE_COLOR] + [POSITIVE_COLOR] * (len(frequency) - 1),
+                text=frequency["Porcentaje"].map(lambda value: f"{format_number(value, 1)} %"),
+                textposition="outside",
+                hovertemplate="%{x} compras<br>Clientes: %{y}<extra></extra>",
+            )
+        )
+        frequency_figure.update_layout(
+            template="plotly_white",
+            height=320,
+            margin={"l": 10, "r": 10, "t": 20, "b": 10},
+            xaxis_title="Número de pedidos en el período",
+            yaxis_title="Clientes",
+        )
+        frequency_figure.update_yaxes(gridcolor="#E8E6DF")
+        st.plotly_chart(frequency_figure, width="stretch", config={"displayModeBar": False})
+
+    with retention_column:
+        st.markdown("**Retención de clientes año contra año**")
+        if retention.empty:
+            st.caption("Se necesita al menos un año previo en los datos para medir retención.")
+        else:
+            retention_figure = go.Figure(
+                go.Bar(
+                    x=retention["Año"],
+                    y=retention["Retención"],
+                    marker_color=POSITIVE_COLOR,
+                    text=retention["Retención"].map(lambda value: f"{format_number(value, 1)} %"),
+                    textposition="outside",
+                    customdata=retention[["Clientes retenidos", "Clientes año anterior"]],
+                    hovertemplate=(
+                        "%{x}<br>Retención: %{y:.1f} %"
+                        "<br>%{customdata[0]} de %{customdata[1]} clientes<extra></extra>"
+                    ),
+                )
+            )
+            retention_figure.update_layout(
+                template="plotly_white",
+                height=320,
+                margin={"l": 10, "r": 10, "t": 20, "b": 10},
+                xaxis_title="Año",
+                yaxis_title="% de clientes retenidos",
+                yaxis_range=[0, 100],
+            )
+            retention_figure.update_yaxes(gridcolor="#E8E6DF")
+            st.plotly_chart(retention_figure, width="stretch", config={"displayModeBar": False})
+
+    st.markdown("**Fidelización de clientes (modelo RFM)**")
+    st.caption(
+        "Cada cliente recibe una puntuación de 1 a 4 en Recencia (días desde su última "
+        "compra), Frecuencia (número de pedidos) y Monto (ventas), según su cuartil dentro "
+        "del período. Con esas puntuaciones se asigna un segmento de fidelidad."
+    )
+    if customer_count >= 4:
+        rfm = customer_summary.copy()
+        last_purchase = filtered.groupby("Customer ID")["Order Date"].max()
+        rfm["Recencia"] = (end.normalize() - rfm["Customer ID"].map(last_purchase)).dt.days
+        quartile_labels = [1, 2, 3, 4]
+        rfm["R"] = pd.qcut(
+            rfm["Recencia"].rank(method="first", ascending=False), 4, labels=quartile_labels
+        ).astype(int)
+        rfm["F"] = pd.qcut(
+            rfm["Pedidos"].rank(method="first"), 4, labels=quartile_labels
+        ).astype(int)
+        rfm["M"] = pd.qcut(
+            rfm["Ventas"].rank(method="first"), 4, labels=quartile_labels
+        ).astype(int)
+
+        def loyalty_segment(row: pd.Series) -> str:
+            if row["R"] >= 3 and row["F"] >= 3:
+                return "Campeones" if row["M"] >= 3 and row["R"] == 4 else "Leales"
+            if row["R"] >= 3:
+                return "Potenciales"
+            if row["F"] >= 3:
+                return "En riesgo"
+            return "Inactivos"
+
+        rfm["Segmento"] = rfm.apply(loyalty_segment, axis=1)
+        loyal_share = rfm["Segmento"].isin(["Campeones", "Leales"]).mean() * 100
+        segment_table = (
+            rfm.groupby("Segmento")
+            .agg(
+                Clientes=("Customer ID", "count"),
+                Ventas=("Ventas", "sum"),
+                Pedidos_promedio=("Pedidos", "mean"),
+                Recencia_media=("Recencia", "mean"),
+            )
+            .reindex([name for name, _ in LOYALTY_SEGMENTS])
+            .dropna(subset=["Clientes"])
+            .reset_index()
+        )
+        segment_table["% clientes"] = segment_table["Clientes"] / customer_count * 100
+        segment_table["% ventas"] = segment_table["Ventas"] / total_sales * 100
+
+        loyalty_metric, loyalty_chart = st.columns([1, 2])
+        with loyalty_metric:
+            st.metric(
+                "Índice de fidelización",
+                f"{format_number(loyal_share, 1)} %",
+                help="Porcentaje de clientes en los segmentos Campeones o Leales.",
+            )
+            loyal_sales_share = segment_table.loc[
+                segment_table["Segmento"].isin(["Campeones", "Leales"]), "% ventas"
+            ].sum()
+            st.metric(
+                "Ventas de clientes fieles",
+                f"{format_number(loyal_sales_share, 1)} %",
+                help="Participación en ventas de los segmentos Campeones y Leales.",
+            )
+        with loyalty_chart:
+            loyalty_figure = go.Figure()
+            for metric_name, opacity in (("% clientes", 0.55), ("% ventas", 1.0)):
+                loyalty_figure.add_trace(
+                    go.Bar(
+                        x=segment_table["Segmento"],
+                        y=segment_table[metric_name],
+                        name=metric_name,
+                        marker_color=[SEGMENT_COLORS[name] for name in segment_table["Segmento"]],
+                        marker_opacity=opacity,
+                        text=segment_table[metric_name].map(
+                            lambda value: f"{format_number(value, 1)} %"
+                        ),
+                        textposition="outside",
+                        hovertemplate="%{x}<br>" + metric_name + ": %{y:.1f} %<extra></extra>",
+                    )
+                )
+            loyalty_figure.update_layout(
+                template="plotly_white",
+                barmode="group",
+                height=320,
+                margin={"l": 10, "r": 10, "t": 20, "b": 10},
+                yaxis_title="Porcentaje",
+                legend={"orientation": "h", "y": 1.12},
+            )
+            loyalty_figure.update_yaxes(gridcolor="#E8E6DF")
+            st.plotly_chart(loyalty_figure, width="stretch", config={"displayModeBar": False})
+
+        descriptions = dict(LOYALTY_SEGMENTS)
+        display_segments = pd.DataFrame(
+            {
+                "Segmento": segment_table["Segmento"],
+                "Descripción": segment_table["Segmento"].map(descriptions),
+                "Clientes": segment_table["Clientes"].map(lambda v: format_number(v)),
+                "% clientes": segment_table["% clientes"].map(lambda v: f"{format_number(v, 1)} %"),
+                "% ventas": segment_table["% ventas"].map(lambda v: f"{format_number(v, 1)} %"),
+                "Pedidos promedio": segment_table["Pedidos_promedio"].map(
+                    lambda v: format_number(v, 1)
+                ),
+                "Días desde última compra": segment_table["Recencia_media"].map(
+                    lambda v: format_number(v, 0)
+                ),
+            }
+        )
+        st.dataframe(display_segments, hide_index=True, width="stretch")
+    else:
+        st.caption("Se necesitan al menos 4 clientes en el período para segmentar.")
+
+    st.markdown("**Top 10 clientes por ventas**")
 
     customer_figure = go.Figure(
         go.Bar(
@@ -805,8 +1101,8 @@ with customer_tab:
         config={"displayModeBar": False},
     )
     st.caption(
-        "La repetición de pedidos se calcula solo dentro del período y filtros "
-        "seleccionados; no representa retención ni lealtad histórica."
+        "Recompra, frecuencia y RFM se calculan dentro del período y filtros "
+        "seleccionados; la retención anual usa años calendario completos."
     )
 
 with state_tab:
@@ -1000,59 +1296,10 @@ with dispatch_tab:
     )
 
 st.divider()
-with st.expander("Consultar y descargar los registros filtrados"):
-    visible_columns = [
-        "Order Date",
-        "Order ID",
-        "Region",
-        "Category",
-        "Sub-Category",
-        "Sales",
-        "Ship Mode",
-        "Ship Date",
-    ]
-    detail = filtered[visible_columns].copy()
-    detail = detail.rename(
-        columns={
-            "Order Date": "Fecha del pedido",
-            "Order ID": "Identificador del pedido",
-            "Region": "Región",
-            "Category": "Categoría",
-            "Sub-Category": "Subcategoría",
-            "Sales": "Ventas registradas",
-            "Ship Mode": "Modalidad de envío",
-            "Ship Date": "Fecha de envío",
-        }
-    )
-    for column in ("Región", "Categoría", "Subcategoría", "Modalidad de envío"):
-        mappings = {
-            "Región": REGION_NAMES,
-            "Categoría": CATEGORY_NAMES,
-            "Subcategoría": SUBCATEGORY_NAMES,
-            "Modalidad de envío": SHIP_MODE_NAMES,
-        }
-        detail[column] = detail[column].map(
-            lambda value: mappings[column].get(value, value)
-        )
-    st.dataframe(
-        detail.sort_values("Fecha del pedido", ascending=False).head(500),
-        hide_index=True,
-        width="stretch",
-        height=350,
-    )
-    st.caption(
-        f"Vista previa de hasta 500 de {len(detail):,} líneas filtradas. "
-        "La descarga incluye todas las filas que cumplen los filtros.".replace(",", ".")
-    )
-    st.download_button(
-        "Descargar datos filtrados (CSV)",
-        data=detail.to_csv(index=False).encode("utf-8-sig"),
-        file_name="ventas_superstore_filtradas.csv",
-        mime="text/csv",
-    )
+ 
 
 st.caption(
     "Fuente: train.csv (Superstore). El conjunto contiene ventas y fechas de pedido/envío, "
-    "pero no costos, utilidad, descuentos, unidades ni existencias. Por ello, este tablero "
-    "no calcula márgenes ni atribuye causas."
+    "pero no costos ni utilidad: la ganancia, el costo y los rendimientos se estiman con "
+    "los porcentajes definidos en «Supuestos de rentabilidad»."
 )

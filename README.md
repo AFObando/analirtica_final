@@ -7,7 +7,7 @@ Aplicación interactiva en Streamlit para explorar las ventas, pedidos, categor�
 Desde PowerShell:
 
 ```powershell
-cd "$HOME\Downloads\trabajo 3"
+cd "$HOME\Downloads\trabajo 3\trabajo final"
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m streamlit run .\app.py
@@ -19,11 +19,13 @@ Streamlit abrirá el tablero en el navegador. Para detenerlo, presiona `Ctrl+C` 
 
 - Rango de fechas ajustable y filtros globales de región.
 - Filtros opcionales de categoría, segmento y modalidad de envío.
-- Indicadores de ventas registradas, pedidos distintos, venta media por pedido y participación del cuarto trimestre.
-- Tendencia mensual por región, variación por categoría, comparación regional y cambios por subcategoría.
+- Indicadores de ventas registradas, pedidos distintos, venta media por pedido y ventas promedio por mes.
+- Tendencia mensual, cambios por categoría y subcategoría, y comparación de ventas, pedidos y venta media.
+- Análisis de clientes recurrentes y concentración de ventas en los 10 principales clientes.
+- Comparación por estado y análisis de días entre pedido y despacho por modalidad y región.
 - Tabla de detalle y descarga del archivo filtrado.
 
-Las comparaciones usan los dos últimos años completos dentro del periodo seleccionado; para rangos menores, usan las mismas fechas del año anterior cuando están disponibles.
+Las comparaciones usan exactamente el rango seleccionado frente a las mismas fechas del año anterior, cuando esos datos están disponibles; las etiquetas muestran ambos rangos. Si el CSV no contiene el período anterior, las visualizaciones muestran el período filtrado sin comparación. La repetición de pedidos se calcula dentro del período filtrado. El indicador operativo mide días hasta el despacho, no tiempo de entrega ni cumplimiento de una fecha prometida.
 
 ## Consideraciones sobre los datos
 

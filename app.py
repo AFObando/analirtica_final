@@ -1067,6 +1067,51 @@ with customer_tab:
             }
         )
         st.dataframe(display_segments, hide_index=True, width="stretch")
+
+        st.markdown("**¿Quiénes son los clientes más fieles?**")
+        rfm["Puntaje RFM"] = rfm["R"] + rfm["F"] + rfm["M"]
+        rfm["Última compra"] = rfm["Customer ID"].map(last_purchase)
+        available_segments = [
+            name for name, _ in LOYALTY_SEGMENTS if name in set(rfm["Segmento"])
+        ]
+        selector_column, size_column = st.columns([3, 1])
+        chosen_segments = selector_column.multiselect(
+            "Segmentos a listar",
+            options=available_segments,
+            default=[s for s in ("Campeones", "Leales") if s in available_segments],
+        )
+        list_size = size_column.number_input(
+            "Clientes a mostrar", min_value=5, max_value=200, value=20, step=5
+        )
+        ranking = (
+            rfm.loc[rfm["Segmento"].isin(chosen_segments)]
+            .sort_values(
+                ["Puntaje RFM", "Pedidos", "Ventas", "Recencia"],
+                ascending=[False, False, False, True],
+            )
+            .head(int(list_size))
+        )
+        if ranking.empty:
+            st.caption("Seleccione al menos un segmento para ver sus clientes.")
+        else:
+            ranking_display = pd.DataFrame(
+                {
+                    "#": range(1, len(ranking) + 1),
+                    "Cliente": ranking["Cliente"],
+                    "ID": ranking["Customer ID"],
+                    "Segmento": ranking["Segmento"],
+                    "Puntaje RFM (3–12)": ranking["Puntaje RFM"],
+                    "Pedidos": ranking["Pedidos"],
+                    "Ventas": ranking["Ventas"].map(lambda v: format_number(v, 2)),
+                    "Última compra": ranking["Última compra"].dt.strftime("%d/%m/%Y"),
+                    "Días sin comprar": ranking["Recencia"],
+                }
+            )
+            st.dataframe(ranking_display, hide_index=True, width="stretch")
+            st.caption(
+                "Orden: mayor puntaje RFM (suma de Recencia + Frecuencia + Monto, 1 a 4 "
+                "cada uno); en empate, más pedidos, más ventas y compra más reciente."
+            )
     else:
         st.caption("Se necesitan al menos 4 clientes en el período para segmentar.")
 
